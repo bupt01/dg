@@ -3,6 +3,20 @@
 
 #include <set>
 
+#include <llvm/IR/CFG.h>
+#include <llvm/IR/DebugInfoMetadata.h>
+#include <llvm/IR/InstIterator.h>
+#include <llvm/IR/Instructions.h>
+#if LLVM_VERSION_MAJOR == 3 && LLVM_VERSION_MINOR <= 7
+#include <llvm/IR/LLVMContext.h>
+#endif
+#include <llvm/IR/Module.h>
+#include <llvm/IR/Value.h>
+#include <llvm/Support/raw_os_ostream.h>
+#include "dg/llvm/LLVMDependenceGraph.h"
+#include "dg/llvm/LLVMNode.h"
+#include "dg/llvm/PointerAnalysis/PointerAnalysis.h"
+
 #include "dg/ADT/Queue.h"
 #include "dg/DependenceGraph.h"
 #include "dg/legacy/Analysis.h"
@@ -44,8 +58,18 @@ class WalkAndMark
         WalkData data(slice_id, this, forward_slice ? &markedBlocks : nullptr);
         this->walk(start, markSlice, &data);
     }
+    
+    void markDelt(NodeT *start, uint32_t slice_id,
+             std::set<std::string> &hasGetSlicer,std::set<std::string> &shouldGetSlicer) {
+        WalkData data(slice_id, this, forward_slice ? &markedBlocks : nullptr);
+        this->walkDelt(start, markSliceDelt,&data, hasGetSlicer,shouldGetSlicer);
+    }
 
     void mark(NodeT *start, uint32_t slice_id) {
+        WalkData data(slice_id, this, forward_slice ? &markedBlocks : nullptr);
+        this->walk(start, markSlice, &data);
+    }
+    void markByCD(NodeT *start, uint32_t slice_id) {
         WalkData data(slice_id, this, forward_slice ? &markedBlocks : nullptr);
         this->walk(start, markSlice, &data);
     }
@@ -75,6 +99,120 @@ class WalkAndMark
         std::set<BBlock<NodeT> *> *markedBlocks;
 #endif
     };
+    static llvm::Value *constExprVar(const llvm::ConstantExpr *CE) {
+    using namespace llvm;
+    Value *var = nullptr;
+#if LLVM_VERSION_MAJOR <= 10
+    Instruction *Inst = const_cast<ConstantExpr *>(CE)->getAsInstruction();
+#else
+    Instruction *Inst = CE->getAsInstruction();
+#endif
+
+    switch (Inst->getOpcode()) {
+    case Instruction::GetElementPtr:
+        var = cast<GetElementPtrInst>(Inst)->getPointerOperand();
+        break;
+    case Instruction::BitCast:
+        var = Inst->getOperand(0);
+        break;
+    default:
+        break;
+    }
+
+#if LLVM_VERSION_MAJOR < 5
+    delete Inst;
+#else
+    Inst->deleteValue();
+#endif
+
+    if (var && isa<ConstantExpr>(var))
+        var = constExprVar(cast<ConstantExpr>(var));
+    return var;
+}
+int a;
+  static bool recordTheReadVar(dg::LLVMNode * node,
+                                    std::set<std::string> &hasGetSlicer,std::set<std::string> &shouldGetSlicer) {
+        llvm::Instruction *I =llvm::dyn_cast<llvm::Instruction>(node->getValue());
+        if(!I){
+            return false;
+        }
+        if (!I->mayReadFromMemory())
+            return false;
+        using namespace llvm;
+        const Value *operand = nullptr;
+        if (auto *L = dyn_cast<LoadInst>(I)) {
+            auto *A = L->getPointerOperand()->stripPointerCasts();
+            if (auto *C = dyn_cast<ConstantExpr>(A)) {
+                operand = constExprVar(C);
+            } else if ((isa<AllocaInst>(A) || isa<GlobalVariable>(A))) {
+                operand = A;
+            }
+        }
+        if(!operand){
+            return false;
+        }
+        // global variables have names, just compare it
+        if (auto *G = llvm::dyn_cast<llvm::GlobalVariable>(operand)) {
+            std::string varName=G->getName();
+            if(hasGetSlicer.count(varName)){
+                return false;
+            }
+            shouldGetSlicer.insert(varName);
+            return true;          
+        }
+        return false;
+} 
+ static void markSliceDelt(NodeT *n, WalkData *data,
+                         std::set<std::string> &hasGetSlicer,std::set<std::string> &shouldGetSlicer) {
+        recordTheReadVar(n,hasGetSlicer,shouldGetSlicer);
+                   
+        uint32_t slice_id = data->slice_id;
+        n->setSlice(slice_id);
+
+#ifdef ENABLE_CFG
+        // when we marked a node, we need to mark even
+        // the basic block - if there are basic blocks
+        if (BBlock<NodeT> *B = n->getBBlock()) {
+            B->setSlice(slice_id);
+            if (data->markedBlocks) {
+                data->markedBlocks->insert(B);
+            }
+
+            // if this node has CDs, enque them
+            if (data->analysis->isForward()) {
+                for (auto it = n->control_begin(), et = n->control_end();
+                     it != et; ++it) {
+                    data->analysis->enqueue(*it);
+                }
+
+                // if this node is a jump instruction,
+                // add also nodes that control depend on this jump
+                if (n == B->getLastNode()) {
+                    for (BBlock<NodeT> *CD : B->controlDependence()) {
+                        for (auto *cdnd : CD->getNodes()) {
+                            data->analysis->enqueue(cdnd);
+                        }
+                    }
+                }
+            }
+        }
+#endif
+
+        // the same with dependence graph, if we keep a node from
+        // a dependence graph, we need to keep the dependence graph
+        if (DependenceGraph<NodeT> *dg = n->getDG()) {
+            dg->setSlice(slice_id);
+            if (!data->analysis->isForward()) {
+                // and keep also all call-sites of this func (they are
+                // control dependent on the entry node)
+                // This is correct but not so precise - fix it later.
+                // Now I need the correctness...
+                NodeT *entry = dg->getEntry();
+                assert(entry && "No entry node in dg");
+                data->analysis->enqueue(entry);
+            }
+        }
+    }
 
     static void markSlice(NodeT *n, WalkData *data) {
         uint32_t slice_id = data->slice_id;
@@ -191,6 +329,86 @@ class Slicer : legacy::Analysis<NodeT> {
 
     SlicerStatistics &getStatistics() { return statistics; }
     const SlicerStatistics &getStatistics() const { return statistics; }
+        ///
+    // Mark nodes dependent on 'start' with 'sl_id'.
+    // If 'forward_slice' is true, mark the nodes depending on 'start' instead.
+    uint32_t markByCD(NodeT *start, uint32_t sl_id = 0,
+                  bool forward_slice = false) {
+        if (sl_id == 0)
+            sl_id = ++slice_id;
+
+        WalkAndMark<NodeT> wm(forward_slice);
+        wm.mark(start, sl_id);
+
+        ///
+        // If we are performing forward slicing,
+        // we must do the slice executable as we now just
+        // marked the nodes that are data dependent on the
+        // slicing criterion. We do that by using these
+        // nodes as slicing criteria in normal backward slicing.
+        if (forward_slice) {
+            std::set<NodeT *> inslice;
+            for (auto *BB : wm.getMarkedBlocks()) {
+#if ENABLE_CFG
+                for (auto *nd : BB->getNodes()) {
+                    if (nd->getSlice() == sl_id) {
+                        inslice.insert(nd);
+                    }
+                }
+#endif
+            }
+
+            // do backward slicing to make the slice executable
+            if (!inslice.empty()) {
+                WalkAndMark<NodeT> wm2;
+                wm2.mark(inslice, sl_id);
+            }
+        }
+
+        return sl_id;
+    }
+    ///
+    // Mark nodes dependent on 'start' with 'sl_id'.
+    // If 'forward_slice' is true, mark the nodes depending on 'start' instead.
+    uint32_t markDelt(NodeT *start, uint32_t sl_id,std::set<std::string> &hasGetSlicer,
+                                           std::set<std::string> &shouldGetSlicer,
+                                           bool forward_slice = false) {
+        if (sl_id == 0)
+            sl_id = ++slice_id;
+
+        WalkAndMark<NodeT> wm(forward_slice);
+        wm.markDelt(start, sl_id,hasGetSlicer,shouldGetSlicer);
+
+        ///
+        // If we are performing forward slicing,
+        // we must do the slice executable as we now just
+        // marked the nodes that are data dependent on the
+        // slicing criterion. We do that by using these
+        // nodes as slicing criteria in normal backward slicing.
+        if (forward_slice) {
+            std::set<NodeT *> inslice;
+            for (auto *BB : wm.getMarkedBlocks()) {
+#if ENABLE_CFG
+                for (auto *nd : BB->getNodes()) {
+                    if (nd->getSlice() == sl_id) {
+                        inslice.insert(nd);
+                    }
+                }
+#endif
+            }
+
+            // do backward slicing to make the slice executable
+            if (!inslice.empty()) {
+                WalkAndMark<NodeT> wm2;
+                wm2.mark(inslice, sl_id);
+            }
+        }
+
+        return sl_id;
+    }
+
+
+
 
     ///
     // Mark nodes dependent on 'start' with 'sl_id'.

@@ -114,6 +114,89 @@ class Slicer {
                 << "[llvm-slicer] CPU time of control dependence analysis: "
                 << double(stats.cdaTime) / CLOCKS_PER_SEC << " s\n";
     }
+    //LZ
+      bool markByCD(std::set<dg::LLVMNode *> &criteria_nodes) {
+        assert(_dg && "mark() called without the dependence graph built");
+        assert(!criteria_nodes.empty() && "Do not have slicing criteria");
+
+        dg::debug::TimeMeasure tm;
+
+        // compute dependece edges
+        computeDependencies();
+
+        // unmark this set of nodes after marking the relevant ones.
+        // Used to mimic the Weissers algorithm
+        std::set<dg::LLVMNode *> unmark;
+
+        if (_options.removeSlicingCriteria)
+            unmark = criteria_nodes;
+
+        _dg->getCallSites(_options.additionalSlicingCriteria, &criteria_nodes);
+
+        for (const auto &funcName : _options.preservedFunctions)
+            slicer.keepFunctionUntouched(funcName.c_str());
+
+        slice_id = _default_slice_id;
+
+        tm.start();
+        for (dg::LLVMNode *start : criteria_nodes)
+            slice_id = slicer.markByCD(start, slice_id, _options.forwardSlicing);
+
+        assert(slice_id != 0 && "Somethig went wrong when marking nodes");
+
+        // if we have some nodes in the unmark set, unmark them
+        for (dg::LLVMNode *nd : unmark)
+            nd->setSlice(0);
+
+        tm.stop();
+        tm.report("[llvm-slicer] Finding dependent nodes took");
+
+        return true;
+    }
+
+ // Mark the nodes from the slice.
+    // This method calls computeDependencies(),
+    // but buildDG() must be called before.
+    bool markDelt(std::set<dg::LLVMNode *> &criteria_nodes,std::set<std::string> &hasGetSlicer,
+                                           std::set<std::string> &shouldGetSlicer) {
+        assert(_dg && "mark() called without the dependence graph built");
+        assert(!criteria_nodes.empty() && "Do not have slicing criteria");
+
+        dg::debug::TimeMeasure tm;
+
+        // compute dependece edges
+        computeDependencies();
+
+        // unmark this set of nodes after marking the relevant ones.
+        // Used to mimic the Weissers algorithm
+        std::set<dg::LLVMNode *> unmark;
+
+        if (_options.removeSlicingCriteria)
+            unmark = criteria_nodes;
+
+        _dg->getCallSites(_options.additionalSlicingCriteria, &criteria_nodes);
+
+        for (const auto &funcName : _options.preservedFunctions)
+            slicer.keepFunctionUntouched(funcName.c_str());
+
+        slice_id = _default_slice_id;
+
+        tm.start();
+        for (dg::LLVMNode *start : criteria_nodes)
+            slice_id = slicer.markDelt(start, slice_id,hasGetSlicer,shouldGetSlicer,_options.forwardSlicing);
+
+        assert(slice_id != 0 && "Somethig went wrong when marking nodes");
+
+        // if we have some nodes in the unmark set, unmark them
+        for (dg::LLVMNode *nd : unmark)
+            nd->setSlice(0);
+
+        tm.stop();
+        tm.report("[llvm-slicer] Finding dependent nodes took");
+
+        return true;
+    }
+
 
     // Mark the nodes from the slice.
     // This method calls computeDependencies(),
@@ -402,7 +485,7 @@ class DGDumper {
                                   debug::PRINT_USE | debug::PRINT_ID)
             : options(opts), dg(dg), bb_only(bb_only), dump_opts(dump_opts) {}
 
-    void dumpToDot(const char *suffix = nullptr) {
+    void dumpToDot(const char *suffix = nullptr,bool isDumpBranch=false) {
         // compose new name
         std::string fl(options.inputFile);
         if (suffix)
@@ -411,15 +494,19 @@ class DGDumper {
             replace_suffix(fl, ".dot");
 
         llvm::errs() << "[llvm-slicer] Dumping DG to " << fl << "\n";
-
         if (bb_only) {
             debug::LLVMDGDumpBlocks dumper(dg, dump_opts, fl.c_str());
             dumper.dump();
         } else {
             debug::LLVMDG2Dot dumper(dg, dump_opts, fl.c_str());
-            dumper.dump();
+            if(isDumpBranch){
+                dumper.dumpBranchLine();
+            }else{
+                dumper.dump();
+            }
         }
     }
+
 };
 
 namespace {

@@ -54,11 +54,168 @@ template <typename NodeT, typename QueueT>
 class NodesWalk : public NodesWalkBase<NodeT> {
   public:
     NodesWalk<NodeT, QueueT>(uint32_t opts = 0) : options(opts) {}
+    template <typename FuncT, typename DataT>
+    void walkByCD(NodeT *entry, FuncT func, DataT data) {
+        walkByCD<FuncT, DataT>(std::set<NodeT *>{entry}, func, data);
+    }
+     template <typename FuncT, typename DataT>
+    void walkByCD(const std::set<NodeT *> &entry, FuncT func, DataT data) {
+        run_id = ++NodesWalk<NodeT, QueueT>::walk_run_counter;
+
+        assert(!entry.empty() && "Need entry node for traversing nodes");
+        std::set<NodeT *> sliceOnlyByCD;
+        for (auto *ent : entry){
+            enqueue(ent);
+            sliceOnlyByCD.insert(ent);
+        }
+
+        while (!queue.empty()) {
+            NodeT *n = queue.pop();
+
+            prepare(n);
+            func(n, data);
+
+            // do not try to process edges if we know
+            // we should not
+            if (options == 0)
+                continue;
+
+            // add unprocessed vertices
+            if (options & NODES_WALK_CD) {
+                processEdges(n->control_begin(), n->control_end());
+#ifdef ENABLE_CFG
+                // we can have control dependencies in BBlocks
+                processBBlockCDs(n);
+#endif // ENABLE_CFG
+            }
+
+            if (options & NODES_WALK_REV_CD) {
+                processEdges(n->rev_control_begin(), n->rev_control_end());
+
+#ifdef ENABLE_CFG
+                // we can have control dependencies in BBlocks
+                processBBlockRevCDs(n);
+#endif // ENABLE_CFG
+            }
+
+            if (options & NODES_WALK_DD&&(!sliceOnlyByCD.count(n)))
+                processEdges(n->data_begin(), n->data_end());
+
+            if (options & NODES_WALK_REV_DD)
+                processEdges(n->rev_data_begin(), n->rev_data_end());
+
+            if (options & NODES_WALK_USE)
+                processEdges(n->use_begin(), n->use_end());
+
+            if (options & NODES_WALK_USER)
+                processEdges(n->user_begin(), n->user_end());
+
+            if (options & NODES_WALK_ID)
+                processEdges(n->interference_begin(), n->interference_end());
+
+            if (options & NODES_WALK_REV_ID)
+                processEdges(n->rev_interference_begin(),
+                             n->rev_interference_end());
+
+#ifdef ENABLE_CFG
+            if (options & NODES_WALK_BB_CFG)
+                processBBlockCFG(n);
+
+            if (options & NODES_WALK_BB_REV_CFG)
+                processBBlockRevCFG(n);
+#endif // ENABLE_CFG
+
+            if (options & NODES_WALK_BB_POSTDOM_FRONTIERS)
+                processBBlockPostDomFrontieres(n);
+
+            // FIXME interprocedural
+        }
+    }
+
+ template <typename FuncT, typename DataT>
+    void walkDelt(NodeT *entry, FuncT func, DataT data,
+                    std::set<std::string> &hasGetSlicer,std::set<std::string> &shouldGetSlicer) {
+        walkDelt<FuncT, DataT>(std::set<NodeT *>{entry}, func, data,hasGetSlicer,shouldGetSlicer);
+    }
+
+
+    template <typename FuncT, typename DataT>
+    void walkDelt(const std::set<NodeT *> &entry, FuncT func, 
+                DataT data,std::set<std::string> &hasGetSlicer,std::set<std::string> &shouldGetSlicer) {
+        run_id = ++NodesWalk<NodeT, QueueT>::walk_run_counter;
+
+        assert(!entry.empty() && "Need entry node for traversing nodes");
+        for (auto *ent : entry)
+            enqueue(ent);
+
+        while (!queue.empty()) {
+            NodeT *n = queue.pop();
+
+            prepare(n);
+            func(n, data,hasGetSlicer,shouldGetSlicer);
+         
+            // do not try to process edges if we know
+            // we should not
+            if (options == 0)
+                continue;
+
+            // add unprocessed vertices
+            if (options & NODES_WALK_CD) {
+                processEdges(n->control_begin(), n->control_end());
+#ifdef ENABLE_CFG
+                // we can have control dependencies in BBlocks
+                processBBlockCDs(n);
+#endif // ENABLE_CFG
+            }
+
+            if (options & NODES_WALK_REV_CD) {
+                processEdges(n->rev_control_begin(), n->rev_control_end());
+
+#ifdef ENABLE_CFG
+                // we can have control dependencies in BBlocks
+                processBBlockRevCDs(n);
+#endif // ENABLE_CFG
+            }
+
+            if (options & NODES_WALK_DD)
+                processEdges(n->data_begin(), n->data_end());
+
+            if (options & NODES_WALK_REV_DD)
+                processEdges(n->rev_data_begin(), n->rev_data_end());
+
+            if (options & NODES_WALK_USE)
+                processEdges(n->use_begin(), n->use_end());
+
+            if (options & NODES_WALK_USER)
+                processEdges(n->user_begin(), n->user_end());
+
+            if (options & NODES_WALK_ID)
+                processEdges(n->interference_begin(), n->interference_end());
+
+            if (options & NODES_WALK_REV_ID)
+                processEdges(n->rev_interference_begin(),
+                             n->rev_interference_end());
+
+#ifdef ENABLE_CFG
+            if (options & NODES_WALK_BB_CFG)
+                processBBlockCFG(n);
+
+            if (options & NODES_WALK_BB_REV_CFG)
+                processBBlockRevCFG(n);
+#endif // ENABLE_CFG
+
+            if (options & NODES_WALK_BB_POSTDOM_FRONTIERS)
+                processBBlockPostDomFrontieres(n);
+
+            // FIXME interprocedural
+        }
+    }
 
     template <typename FuncT, typename DataT>
     void walk(NodeT *entry, FuncT func, DataT data) {
         walk<FuncT, DataT>(std::set<NodeT *>{entry}, func, data);
     }
+
 
     template <typename FuncT, typename DataT>
     void walk(const std::set<NodeT *> &entry, FuncT func, DataT data) {
@@ -73,7 +230,7 @@ class NodesWalk : public NodesWalkBase<NodeT> {
 
             prepare(n);
             func(n, data);
-
+         
             // do not try to process edges if we know
             // we should not
             if (options == 0)

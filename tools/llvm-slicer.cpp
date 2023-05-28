@@ -132,7 +132,8 @@ static AnnotationOptsT parseAnnotationOptions(const std::string &annot) {
 
     return opts;
 }
-
+std::set<std::string> hasGetSlicer;
+std::set<std::string> shouldGetSlicer;
 int main(int argc, char *argv[]) {
     setupStackTraceOnError(argc, argv);
 
@@ -208,7 +209,6 @@ int main(int argc, char *argv[]) {
             maybe_print_statistics(M.get(), "Statistics after ");
             return writer.cleanAndSaveModule(should_verify_module);
         }
-
         DBG(llvm - slicer, "Cutting off diverging branches");
         if (!llvmdg::cutoffDivergingBranches(
                     *M, options.dgOptions.entryFunction, csvalues)) {
@@ -227,7 +227,7 @@ int main(int argc, char *argv[]) {
 
     ModuleAnnotator annotator(options, &slicer.getDG(),
                               parseAnnotationOptions(annotationOpts));
-
+    std::cout<<"开始得到node"<<"options.legacySlicingCriteria:"<<options.legacySlicingCriteria<<std::endl;
     std::set<LLVMNode *> criteria_nodes;
     if (!getSlicingCriteriaNodes(slicer.getDG(), options.slicingCriteria,
                                  options.legacySlicingCriteria,
@@ -255,20 +255,67 @@ int main(int argc, char *argv[]) {
         }
 
         if (!slicer.createEmptyMain()) {
+        }
             llvm::errs() << "ERROR: failed creating an empty main\n";
             return 1;
-        }
 
         maybe_print_statistics(M.get(), "Statistics after ");
         return writer.cleanAndSaveModule(should_verify_module);
     }
+/*
+    //lz
+    std::vector<std::string> criteria = splitList(options.legacySlicingCriteria);
+    assert(!criteria.empty() && "Did not get slicing criteria");
 
+    std::vector<std::string> line_criteria;
+    std::vector<std::string> node_criteria;
+    std::tie(line_criteria, node_criteria) =
+            splitStringVector(criteria, [](std::string &s) -> bool {
+                return s.find(':') != std::string::npos;
+            });
+     for (auto &crit : line_criteria) {
+        auto parts = splitList(crit, ':');
+        assert(parts.size() == 2);
+        hasGetSlicer.insert(parts[1]);
+        // parse the line number
+    }
+*/
     // mark nodes that are going to be in the slice
-    if (!slicer.mark(criteria_nodes)) {
+    //if (!slicer.markDelt(criteria_nodes,hasGetSlicer,shouldGetSlicer)) {
+     if (!slicer.mark(criteria_nodes)) {
         llvm::errs() << "Finding dependent nodes failed\n";
         return 1;
     }
+/*
+    std::cout<<"hasGetSlicer:"<<hasGetSlicer.size()<<std::endl;
+    std::cout<<"shouldGetSlicer:"<<shouldGetSlicer.size()<<std::endl;
+    
+    while(shouldGetSlicer.size()!=0){
+        for(auto sgs:shouldGetSlicer){
+            std::cout<<sgs<<std::endl;
+        }
+       std::set<LLVMNode *> criteria_nodes;
+       //TO-DO 手动建立切片标准
+       std::string legacySlicingCriteria;
+       for(auto str:shouldGetSlicer){
+          hasGetSlicer.insert(str);
+          legacySlicingCriteria=legacySlicingCriteria+":"+str+",";
+       }
+       shouldGetSlicer.clear();
+       legacySlicingCriteria.pop_back();
 
+       if (!getSlicingCriteriaWriteNodes(slicer.getDG(), "",
+                                 legacySlicingCriteria,
+                                 "",
+                                 criteria_nodes,
+                                 options.criteriaAreNextInstr)) {
+            continue;
+       }
+       
+       slicer.markDelt(criteria_nodes,hasGetSlicer,shouldGetSlicer);
+
+    }
+  */  
     // print debugging llvm IR if user asked for it
     if (annotator.shouldAnnotate())
         annotator.annotate(&criteria_nodes);
@@ -276,7 +323,6 @@ int main(int argc, char *argv[]) {
     DGDumper dumper(options, &slicer.getDG(), dump_bb_only);
     if (dump_dg) {
         dumper.dumpToDot();
-
         if (dump_dg_only)
             return 0;
     }
@@ -288,7 +334,7 @@ int main(int argc, char *argv[]) {
     }
 
     if (dump_dg) {
-        dumper.dumpToDot(".sliced.dot");
+        dumper.dumpToDot(".sliced.dot",true);
     }
 
     // remove unused from module again, since slicing

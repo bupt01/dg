@@ -181,7 +181,6 @@ class LLVMDG2Dot : public debug::DG2Dot<LLVMNode> {
         for (const auto &F : CF) {
             if (dump_func_only && !F.first->getName().equals(dump_func_only))
                 continue;
-
             dumpSubgraph(F.second, F.first->getName().data());
         }
 
@@ -189,12 +188,37 @@ class LLVMDG2Dot : public debug::DG2Dot<LLVMNode> {
 
         return true;
     }
+    bool dumpBranchLine(const char *new_file = nullptr,
+              const char *dump_func_only = nullptr) {
+        // make sure we have the file opened
+        if (!ensureFile(new_file))
+            return false;
+
+        const std::map<llvm::Value *, LLVMDependenceGraph *> &CF =
+                getConstructedFunctions();
+
+        //start();
+
+        for (const auto &F : CF) {
+            if (dump_func_only && !F.first->getName().equals(dump_func_only))
+                continue;
+            //dumpSubgraphStart(F.second, F.first->getName().data());
+            for (auto &B : F.second->getBlocks()) {       
+                dumpBBlock(B.second,2,true);
+            }
+        }
+
+        //end();
+
+        return true;
+ }
 
   private:
     void dumpSubgraph(LLVMDependenceGraph *graph, const char *name) {
         dumpSubgraphStart(graph, name);
 
         for (auto &B : graph->getBlocks()) {
+            
             dumpBBlock(B.second);
         }
 

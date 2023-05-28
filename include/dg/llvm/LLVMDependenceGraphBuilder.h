@@ -233,7 +233,6 @@ class LLVMDependenceGraphBuilder {
 
         // fill-in control dependencies
         _runControlDependenceAnalysis();
-
         if (_options.threads) {
             _runInterferenceDependenceAnalysis();
             _runForkJoinAnalysis();

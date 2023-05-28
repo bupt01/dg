@@ -53,7 +53,6 @@ static inline bool mayBeTheVar(const llvm::Value *val, const std::string &var) {
     // which we must take as a match
     return true;
 }
-
 static llvm::Value *constExprVar(const llvm::ConstantExpr *CE) {
     using namespace llvm;
     Value *var = nullptr;
@@ -84,13 +83,70 @@ static llvm::Value *constExprVar(const llvm::ConstantExpr *CE) {
         var = constExprVar(cast<ConstantExpr>(var));
     return var;
 }
+//lz
+static bool usesTheGlobalVariable(const llvm::Instruction &I, const std::string &var,
+                            bool isglobal = false,
+                            LLVMPointerAnalysis *pta = nullptr) {
+    if (!I.mayReadOrWriteMemory())
+        return false;
+    if (!pta) {
+        // try basic cases that we can decide without PTA
+        using namespace llvm;
+        const Value *operand = nullptr;
+        if (auto *S = dyn_cast<StoreInst>(&I)) {
+            auto *A = S->getPointerOperand()->stripPointerCasts();
+            if (auto *C = dyn_cast<ConstantExpr>(A)) {
+                operand = constExprVar(C);
+            } else if ((isa<AllocaInst>(A) || isa<GlobalVariable>(A))) {
+                operand = A;
+            }
+        } else if (auto *L = dyn_cast<LoadInst>(&I)) {
+            auto *A = L->getPointerOperand()->stripPointerCasts();
+            if (auto *C = dyn_cast<ConstantExpr>(A)) {
+                operand = constExprVar(C);
+            } else if ((isa<AllocaInst>(A) || isa<GlobalVariable>(A))) {
+                operand = A;
+            }
+        }
+        if(!operand){
+            return false;
+        }
+        if (auto *G = llvm::dyn_cast<llvm::GlobalVariable>(operand)) {
+          return operand&&(G->getName() == var);
+        }else{
+            return false;
+        }
+        
+    }
+
+    auto memacc = pta->getAccessedMemory(&I);
+    if (memacc.first) {
+        // PTA has no information, it may be a definition of the variable,
+        // we do not know
+        llvm::errs() << "WARNING: matched due to a lack of information: " << I
+                     << "\n";
+        return true;
+    }
+    for (const auto &region : memacc.second) {
+        if (isglobal &&
+            !llvm::isa<llvm::GlobalVariable>(region.pointer.value)) {
+            continue;
+        }
+        if (mayBeTheVar(region.pointer.value, var)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+
 
 static bool usesTheVariable(const llvm::Instruction &I, const std::string &var,
                             bool isglobal = false,
                             LLVMPointerAnalysis *pta = nullptr) {
     if (!I.mayReadOrWriteMemory())
         return false;
-
     if (!pta) {
         // try basic cases that we can decide without PTA
         using namespace llvm;
@@ -125,6 +181,7 @@ static bool usesTheVariable(const llvm::Instruction &I, const std::string &var,
                      << "\n";
         return true;
     }
+        std::cout<<"有指针分析"<<std::endl;
 
     for (const auto &region : memacc.second) {
         if (isglobal &&
@@ -536,8 +593,8 @@ static void initDebugInfo(LLVMDependenceGraph &dg) {
     for (const auto &GV : dg.getModule()->globals()) {
         valuesToVariables[&GV] = GV.getName().str();
     }
-#endif // LLVM > 3.6
 }
+#endif // LLVM > 3.6
 
 ///
 /// constructed_only  Search the criteria in DG's constructed functions
@@ -632,7 +689,6 @@ static std::vector<SlicingCriteriaSet> getSlicingCriteriaInstructions(
             }
         }
     }
-
     if (!secondaryToAll.empty()) {
         for (auto &SC : result) {
             if (SC.primary.empty())
@@ -798,17 +854,27 @@ instMatchesCrit(LLVMDependenceGraph &dg, const llvm::Instruction &I,
 #endif
             continue;
         }
+         if (c.first==-1){//lz md
+            if(usesTheGlobalVariable(I, c.second, dg.getPTA())){
+                llvm::errs() << "Matched line " << c.first << " with call of "
+                         << c.second << " to:\n"
+                         << I << "\n";
+                return true;
+
+            }
+            continue;
+         }
+
 
         if (static_cast<int>(Loc.getLine()) != c.first)
             continue;
-
+        std::cout<<"指针分析"<<dg.getPTA()<<std::endl;
         if (instIsCallOf(I, c.second, dg.getPTA())) {
             llvm::errs() << "Matched line " << c.first << " with call of "
                          << c.second << " to:\n"
                          << I << "\n";
             return true;
         } // else fall through to check the vars
-
         if (usesTheVariable(I, c.second, dg.getPTA())) {
             llvm::errs() << "Matched line " << c.first << " with variable "
                          << c.second << " to:\n"
@@ -819,7 +885,52 @@ instMatchesCrit(LLVMDependenceGraph &dg, const llvm::Instruction &I,
 
     return false;
 }
+static bool
+instMatchesWriteCrit(LLVMDependenceGraph &dg, const llvm::Instruction &I,
+                const std::vector<std::pair<int, std::string>> &parsedCrit) {
+    for (const auto &c : parsedCrit) {
+        const auto &Loc = I.getDebugLoc();
+#if (LLVM_VERSION_MAJOR == 3 && LLVM_VERSION_MINOR < 7)
+        if (Loc.getLine() <= 0) {
+#else
+        if (!Loc) {
+#endif
+            continue;
+        }
+         if (c.first==-1){//lz md
+             if (!I.mayWriteToMemory())
+                return false;
 
+            if(usesTheGlobalVariable(I, c.second, dg.getPTA())){
+                llvm::errs() << "Matched line " << c.first << " with call of "
+                         << c.second << " to:\n"
+                         << I << "\n";
+                return true;
+
+            }
+            continue;
+         }
+
+
+        if (static_cast<int>(Loc.getLine()) != c.first)
+            continue;
+
+        if (instIsCallOf(I, c.second, dg.getPTA())) {
+            llvm::errs() << "Matched line " << c.first << " with call of "
+                         << c.second << " to:\n"
+                         << I << "\n";
+            return true;
+        } // else fall through to check the vars
+        if (usesTheVariable(I, c.second, dg.getPTA())) {
+            llvm::errs() << "Matched line " << c.first << " with variable "
+                         << c.second << " to:\n"
+                         << I << "\n";
+            return true;
+        }
+    }
+
+    return false;
+}
 static bool
 globalMatchesCrit(const llvm::GlobalVariable &G,
                   const std::vector<std::pair<int, std::string>> &parsedCrit) {
@@ -835,6 +946,64 @@ globalMatchesCrit(const llvm::GlobalVariable &G,
 
     return false;
 }
+
+static void getLineCriteriaWriteNodes(LLVMDependenceGraph &dg,
+                                 std::vector<std::string> &criteria,
+                                 std::set<LLVMNode *> &nodes) {
+    assert(!criteria.empty() && "No criteria given");
+
+    std::vector<std::pair<int, std::string>> parsedCrit;
+    for (auto &crit : criteria) {
+        auto parts = splitList(crit, ':');
+        assert(parts.size() == 2);
+
+        // parse the line number
+        if (parts[0].empty()) {
+            // global variable
+            parsedCrit.emplace_back(-1, parts[1]);
+        } else if (isNumber(parts[0])) {
+            int line = atoi(parts[0].c_str());
+            if (line > 0)
+                parsedCrit.emplace_back(line, parts[1]);
+        } else {
+            llvm::errs()
+                    << "Invalid line: '" << parts[0] << "'. "
+                    << "Needs to be a number or empty for global variables.\n";
+        }
+    }
+
+    assert(!parsedCrit.empty() && "Failed parsing criteria");
+
+    initDebugInfo(dg);
+
+    // try match globals
+    for (auto &G : dg.getModule()->globals()) {
+        if (globalMatchesCrit(G, parsedCrit)) {
+            LLVMNode *nd = dg.getGlobalNode(&G);
+            assert(nd);
+            nodes.insert(nd);
+        }
+    }
+
+    // we do not have any mapping, we will not match anything
+    if (valuesToVariables.empty()) {
+        return;
+    }
+
+    // map line criteria to nodes
+    for (const auto &it : getConstructedFunctions()) {
+        for (auto &I :
+             llvm::instructions(*llvm::cast<llvm::Function>(it.first))) {
+            if (instMatchesWriteCrit(dg, I, parsedCrit)) {
+                LLVMNode *nd = it.second->getNode(&I);
+                assert(nd);
+                nodes.insert(nd);
+            }
+        }
+    }
+}
+
+
 
 static void getLineCriteriaNodes(LLVMDependenceGraph &dg,
                                  std::vector<std::string> &criteria,
@@ -890,6 +1059,7 @@ static void getLineCriteriaNodes(LLVMDependenceGraph &dg,
             }
         }
     }
+
 }
 
 static std::set<LLVMNode *>
@@ -950,8 +1120,59 @@ getPrimarySlicingCriteriaNodes(LLVMDependenceGraph &dg,
     // map the criteria to nodes
     if (!node_criteria.empty())
         dg.getCallSites(node_criteria, &nodes);
+    std::cout<<"节点是:"<<nodes.size()<<std::endl;
+    std::cout<<"line_criteria:"<<line_criteria.size()<<std::endl;
     if (!line_criteria.empty())
         getLineCriteriaNodes(dg, line_criteria, nodes);
+
+    if (criteria_are_next_instr && !nodes.empty()) {
+        // the given criteria are just markers for the
+        // next instruction, so map the criteria to
+        // the next instructions
+        auto mappedNodes = _mapToNextInstr(dg, nodes);
+        nodes.swap(mappedNodes);
+    }
+
+    return nodes;
+}
+
+static std::set<LLVMNode *>
+getPrimarySlicingCriteriaWriteNodes(LLVMDependenceGraph &dg,
+                               const std::string &slicingCriteria,
+                               bool criteria_are_next_instr) {
+    std::set<LLVMNode *> nodes;
+    std::vector<std::string> criteria = splitList(slicingCriteria);
+    assert(!criteria.empty() && "Did not get slicing criteria");
+
+    std::vector<std::string> line_criteria;
+    std::vector<std::string> node_criteria;
+    std::tie(line_criteria, node_criteria) =
+            splitStringVector(criteria, [](std::string &s) -> bool {
+                return s.find(':') != std::string::npos;
+            });
+
+    // if user wants to slice with respect to the return of main,
+    // insert the ret instructions to the nodes.
+    for (const auto &c : node_criteria) {
+        if (c == "ret") {
+            LLVMNode *exit = dg.getExit();
+            // We could insert just the exit node, but this way we will
+            // get annotations to the functions.
+            for (auto it = exit->rev_control_begin(),
+                      et = exit->rev_control_end();
+                 it != et; ++it) {
+                nodes.insert(*it);
+            }
+        }
+    }
+
+    // map the criteria to nodes
+    if (!node_criteria.empty())
+        dg.getCallSites(node_criteria, &nodes);
+    std::cout<<"节点是:"<<nodes.size()<<std::endl;
+    std::cout<<"line_criteria:"<<line_criteria.size()<<std::endl;
+    if (!line_criteria.empty())
+        getLineCriteriaWriteNodes(dg, line_criteria, nodes);
 
     if (criteria_are_next_instr && !nodes.empty()) {
         // the given criteria are just markers for the
@@ -1109,14 +1330,16 @@ static bool findSecondarySlicingCriteria(
 
     return true;
 }
-
-bool getSlicingCriteriaNodes(LLVMDependenceGraph &dg,
+bool getSlicingCriteriaWriteNodes(LLVMDependenceGraph &dg,
                              const std::string &slicingCriteria,
                              const std::string &secondarySlicingCriteria,
                              std::set<LLVMNode *> &criteria_nodes,
                              bool criteria_are_next_instr) {
-    auto nodes = getPrimarySlicingCriteriaNodes(dg, slicingCriteria,
+    std::cout<<"要得到："<<std::endl;
+    auto nodes = getPrimarySlicingCriteriaWriteNodes(dg, slicingCriteria,
                                                 criteria_are_next_instr);
+    std::cout<<"已得到："<<std::endl;
+
     if (nodes.empty()) {
         return true; // no criteria found
     }
@@ -1127,7 +1350,37 @@ bool getSlicingCriteriaNodes(LLVMDependenceGraph &dg,
             parseSecondarySlicingCriteria(secondarySlicingCriteria);
     const auto &secondaryControlCriteria = secondaryCriteria.first;
     const auto &secondaryDataCriteria = secondaryCriteria.second;
+    // mark nodes that are going to be in the slice
+    if (!findSecondarySlicingCriteria(criteria_nodes, secondaryControlCriteria,
+                                      secondaryDataCriteria)) {
+        llvm::errs() << "Finding secondary slicing criteria nodes failed\n";
+        return false;
+    }
 
+    return true;
+}
+
+
+bool getSlicingCriteriaNodes(LLVMDependenceGraph &dg,
+                             const std::string &slicingCriteria,
+                             const std::string &secondarySlicingCriteria,
+                             std::set<LLVMNode *> &criteria_nodes,
+                             bool criteria_are_next_instr) {
+    std::cout<<"要得到："<<std::endl;
+    auto nodes = getPrimarySlicingCriteriaNodes(dg, slicingCriteria,
+                                                criteria_are_next_instr);
+    std::cout<<"已得到："<<std::endl;
+
+    if (nodes.empty()) {
+        return true; // no criteria found
+    }
+
+    criteria_nodes.swap(nodes);
+
+    auto secondaryCriteria =
+            parseSecondarySlicingCriteria(secondarySlicingCriteria);
+    const auto &secondaryControlCriteria = secondaryCriteria.first;
+    const auto &secondaryDataCriteria = secondaryCriteria.second;
     // mark nodes that are going to be in the slice
     if (!findSecondarySlicingCriteria(criteria_nodes, secondaryControlCriteria,
                                       secondaryDataCriteria)) {
@@ -1139,6 +1392,7 @@ bool getSlicingCriteriaNodes(LLVMDependenceGraph &dg,
 }
 } // namespace legacy
 
+
 bool getSlicingCriteriaNodes(LLVMDependenceGraph &dg,
                              const std::string &slicingCriteria,
                              const std::string &legacySlicingCriteria,
@@ -1147,6 +1401,27 @@ bool getSlicingCriteriaNodes(LLVMDependenceGraph &dg,
                              bool criteria_are_next_instr) {
     if (!legacySlicingCriteria.empty()) {
         if (!::legacy::getSlicingCriteriaNodes(
+                    dg, legacySlicingCriteria, secondarySlicingCriteria,
+                    criteria_nodes, criteria_are_next_instr))
+            return false;
+    }
+
+    if (!slicingCriteria.empty()) {
+        if (!getSlicingCriteriaNodes(dg, slicingCriteria, criteria_nodes,
+                                     criteria_are_next_instr))
+            return false;
+    }
+
+    return true;
+}
+bool getSlicingCriteriaWriteNodes(LLVMDependenceGraph &dg,
+                             const std::string &slicingCriteria,
+                             const std::string &legacySlicingCriteria,
+                             const std::string &secondarySlicingCriteria,
+                             std::set<LLVMNode *> &criteria_nodes,
+                             bool criteria_are_next_instr) {
+    if (!legacySlicingCriteria.empty()) {
+        if (!::legacy::getSlicingCriteriaWriteNodes(
                     dg, legacySlicingCriteria, secondarySlicingCriteria,
                     criteria_nodes, criteria_are_next_instr))
             return false;
@@ -1188,7 +1463,6 @@ getSlicingCriteriaValues(llvm::Module &M, const std::string &slicingCriteria,
             }
         }
     }
-
     std::vector<const llvm::Value *> ret;
     auto C = getSlicingCriteriaInstructions(
             M, criteria, criteria_are_next_instr,

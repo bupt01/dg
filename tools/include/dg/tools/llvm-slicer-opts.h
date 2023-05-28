@@ -65,5 +65,11 @@ bool getSlicingCriteriaNodes(dg::LLVMDependenceGraph &dg,
                              const std::string &legacySecondarySlicingCriteria,
                              std::set<dg::LLVMNode *> &criteria_nodes,
                              bool criteria_are_next_instr = false);
+bool getSlicingCriteriaWriteNodes(dg::LLVMDependenceGraph &dg,
+                             const std::string &slicingCriteria,
+                             const std::string &legacySlicingCriteria,
+                             const std::string &legacySecondarySlicingCriteria,
+                             std::set<dg::LLVMNode *> &criteria_nodes,
+                             bool criteria_are_next_instr = false);
 
 #endif // DG_TOOLS_LLVM_SLICER_OPTS_H_

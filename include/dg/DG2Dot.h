@@ -194,7 +194,13 @@ class DG2Dot {
         dumpSubgraphEnd(sub);
     }
 
-    void dumpBBlock(BBlock<NodeT> *BB, int ind = 2) { dumpBB(BB, ind); }
+    void dumpBBlock(BBlock<NodeT> *BB, int ind = 2,bool isDumpBranchLine=false) {
+        if(!isDumpBranchLine){
+            dumpBB(BB, ind); 
+        }else{
+            dumpBranchBB(BB,ind);
+        }
+    }
 
     void dumpBBlockEdges(BBlock<NodeT> *BB, int ind = 1) {
         dumpBBedges(BB, ind);
@@ -213,6 +219,26 @@ class DG2Dot {
 
         out.open(new_file);
         file = new_file;
+
+    }
+    void dumpBranchBB(const BBlock<NodeT> *BB, int indent) {
+        // Indent Ind(indent);
+        for (NodeT *n : BB->getNodes()) {
+             std::string Buf;
+             llvm::raw_string_ostream TempOut(Buf);
+             n->getKey()->print(TempOut);
+             if(Buf.find("icmp")!=std::string::npos){
+                llvm::Instruction *I =llvm::dyn_cast<llvm::Instruction>(n->getValue());             
+                if(!I){
+                    continue;
+                }
+                const auto &Loc = I->getDebugLoc();
+                llvm::raw_os_ostream ross(out);
+                Loc.print(ross);
+                std::cout<<Loc.getLine()<<std::endl;
+                out << "\n";
+             } 
+        }
     }
 
     void dumpBB(const BBlock<NodeT> *BB, int indent) {
@@ -239,10 +265,15 @@ class DG2Dot {
         out << "\"\n";
 
         for (NodeT *n : BB->getNodes()) {
+             std::string Buf;
+            // llvm::raw_string_ostream TempOut(Buf);
+            // n->getKey()->print(TempOut);
+            // std::cout<<Buf<<std::endl;
             // print nodes in BB, edges will be printed later
             out << Ind << "\tNODE" << n << " [shape=rect label=\""
                 << n->getKey() << "\"]\n";
         }
+
 
         out << Ind << "} /* cluster_bb_" << BB << " */\n\n";
     }
